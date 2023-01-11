@@ -162,7 +162,7 @@ enum avdecode_pthread_states {
         AVDECODE_STOP, // Will froce decoding thread to switch to DONE ASAP
 
         AVDECODE_DIE = -1, // Worker thread will exit on next state check
-        AVDECODE_DEAD = -2, // Worker thread will exit on next state check
+        AVDECODE_DEAD = -2, // Worker thread is no longer alive
 };
 // Changing state from RUNNING does not guarantuee immidiate
 // withdrawal from accessing common data.
@@ -174,8 +174,8 @@ enum avdecode_pthread_states {
 
 enum avdecode_pthread_lock {
         AVDECODE_FRAME_COMPLETE = 1, // frame is complete and either thread can do a cmpxchg to aquire it.
-        AVDECODE_DECODING = 0, // the main thread shall not access anything
-        AVDECODE_WAIT = -1, // the decoder thread shall not access anything
+        AVDECODE_DECODING = 0,       // the main thread shall not access anything
+        AVDECODE_WAIT = -1,          // the decoder thread shall not access anything
 };
 
 typedef struct gs_avdecode_pthread_s {
