@@ -294,8 +294,8 @@ _gs_avdecode_open_codec_context(
         if (ret < 0) {
 #ifdef GS_AVDECODE_ENABLE_LOGGING
                 fprintf(stderr, "gs_avdecode.h: Could not find %s stream in input file '%s'\n",
-#endif
                         av_get_media_type_string(type), ctx->src_filename);
+#endif
                 return ret;
         } else {
                 stream_index = ret;
