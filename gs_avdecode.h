@@ -7,6 +7,8 @@
  * before including header in one and only one source file
  * to implement declared functions.
  *
+ * You can also define GS_AVDECODE_ENABLE_LOGGING to get stderr output
+ *
  * Requirers linking with ffmpeg stuff.
  * On gcc/clang that would for example be
  *       -lavcodec -lavformat -lavcodec -lswresample -lswscale -lavutil
@@ -230,7 +232,9 @@ _gs_avdecode_decode_packet(gs_avdecode_context_t* ctx, AVCodecContext *dec, cons
                 // submit the packet to the decoder
                 ret = avcodec_send_packet(dec, pkt);
                 if (ret < 0) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                         fprintf(stderr, "gs_avdecode.h: Error submitting a packet for decoding (%s)\n", av_err2str(ret));
+#endif
                         return ret;
                 }
         }
@@ -245,7 +249,9 @@ _gs_avdecode_decode_packet(gs_avdecode_context_t* ctx, AVCodecContext *dec, cons
                         if (ret == AVERROR_EOF || ret == AVERROR(EAGAIN))
                                 return 0;
 
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                         fprintf(stderr, "gs_avdecode.h: Error during decoding (%s)\n", av_err2str(ret));
+#endif
                         return ret;
                 }
                 if (dec->codec->type == AVMEDIA_TYPE_VIDEO) {
@@ -286,7 +292,9 @@ _gs_avdecode_open_codec_context(
 
         ret = av_find_best_stream(ctx->fmt_ctx, type, -1, -1, NULL, 0);
         if (ret < 0) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                 fprintf(stderr, "gs_avdecode.h: Could not find %s stream in input file '%s'\n",
+#endif
                         av_get_media_type_string(type), ctx->src_filename);
                 return ret;
         } else {
@@ -309,30 +317,38 @@ _gs_avdecode_open_codec_context(
                         : avcodec_find_decoder_by_name("libvpx-vp8")
                         ) : avcodec_find_decoder(st->codecpar->codec_id);
                 if (!dec) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                         fprintf(stderr, "gs_avdecode.h: Failed to find %s codec\n",
                                 av_get_media_type_string(type));
+#endif
                         return AVERROR(EINVAL);
                 }
 
                 /* Allocate a codec context for the decoder */
                 *dec_ctx = avcodec_alloc_context3(dec);
                 if (!*dec_ctx) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                         fprintf(stderr, "gs_avdecode.h: Failed to allocate the %s codec context\n",
                                 av_get_media_type_string(type));
+#endif
                         return AVERROR(ENOMEM);
                 }
 
                 /* Copy codec parameters from input stream to output codec context */
                 if ((ret = avcodec_parameters_to_context(*dec_ctx, st->codecpar)) < 0) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                         fprintf(stderr, "gs_avdecode.h: Failed to copy %s codec parameters to decoder context\n",
                                 av_get_media_type_string(type));
+#endif
                         return ret;
                 }
 
                 // Init the decoders
                 if ((ret = avcodec_open2(*dec_ctx, dec, NULL)) < 0) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                         fprintf(stderr, "gs_avdecode.h: Failed to open %s codec\n",
                                 av_get_media_type_string(type));
+#endif
                         return ret;
                 }
                 *stream_idx = stream_index;
@@ -353,13 +369,17 @@ gs_avdecode_init(const char* path, gs_avdecode_context_t* ctx, const gs_graphics
 
         /* open input file, and allocate format context */
         if (avformat_open_input(&ctx->fmt_ctx, ctx->src_filename, NULL, NULL) < 0) {
-                fprintf(stderr, "gs_avdecode.h: Could not open source file %s", ctx->src_filename);
+#ifdef GS_AVDECODE_ENABLE_LOGGING
+                fprintf(stderr, "gs_avdecode.h: Could not open source file %s\n", ctx->src_filename);
+#endif
                 return 1;
         }
 
         /* retrieve stream information */
         if (avformat_find_stream_info(ctx->fmt_ctx, NULL) < 0) {
-                fprintf(stderr, "gs_avdecode.h: Could not find stream information");
+#ifdef GS_AVDECODE_ENABLE_LOGGING
+                fprintf(stderr, "gs_avdecode.h: Could not find stream information\n");
+#endif
                 avformat_close_input(&ctx->fmt_ctx);
                 return 1;
         }
@@ -387,21 +407,27 @@ gs_avdecode_init(const char* path, gs_avdecode_context_t* ctx, const gs_graphics
         av_dump_format(ctx->fmt_ctx, 0, ctx->src_filename, 0);
 
         if (!ctx->audio_stream && !ctx->video_stream) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                 fprintf(stderr, "gs_avdecode.h: Could not find audio or video stream in the input, aborting\n");
+#endif
                 ret = 1;
                 goto end;
         }
 
         ctx->frame = av_frame_alloc();
         if (!ctx->frame) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                 fprintf(stderr, "gs_avdecode.h: Could not allocate frame\n");
+#endif
                 ret = AVERROR(ENOMEM);
                 goto end;
         }
 
         ctx->pkt = av_packet_alloc();
         if (!ctx->pkt) {
+#ifdef GS_AVDECODE_ENABLE_LOGGING
                 fprintf(stderr, "gs_avdecode.h: Could not allocate packet\n");
+#endif
                 ret = AVERROR(ENOMEM);
                 goto end;
         }
