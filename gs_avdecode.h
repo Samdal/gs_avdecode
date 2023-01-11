@@ -193,6 +193,8 @@ typedef struct gs_avdecode_pthread_s {
 // if init_decoder is true it will call gs_avdecode_init(ctxp->video)
 // The thread is detached, doing pthread_join is not needed.
 // returns 0 on success
+//
+// if you set state to DONE before calling this, it will not auto-start (otherwise START is state = 0)
 extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, int init_decoder,
                                           const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
 
