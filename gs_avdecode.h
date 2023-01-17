@@ -205,9 +205,14 @@ typedef struct gs_avdecode_pthread_s {
 // The thread is detached, doing pthread_join is not needed.
 // returns 0 on success
 //
-// // if you set state to DONE before calling this, it will not auto-start (otherwise START is state = 0)
+// if you set state to DONE before calling this, it will not auto-start (otherwise START is state = 0)
 extern int gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, int init_decoder,
                                           const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out);
+
+////////////
+// ensures decoder thread has exited
+extern void
+gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex);
 
 
 #define gs_avdecode_try_aquire_m(_ctxp, ...)                            \
@@ -595,12 +600,13 @@ _gs_avdecode_pthread_player(void* data)
 
 pthread_decoder_start:
         // check for state changes
-        {
-                int check = AVDECODE_STOP;
-                atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DONE);
-        }
         for (; ; gs_platform_sleep(dt)) {
-                int check = AVDECODE_START;
+                int check;
+
+                check = AVDECODE_STOP;
+                atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DONE);
+
+                check = AVDECODE_START;
                 int exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_RUNNING);
                 if (exit) break;
 
@@ -715,6 +721,17 @@ gs_avdecode_pthread_play_video(gs_avdecode_pthread_t* ctxp, const char* path, in
         }
 
         return res;
+}
+
+void
+gs_avdecode_pthread_destroy(gs_avdecode_pthread_t* ctxp, gs_asset_texture_t* tex)
+{
+        if (!ctxp) return;
+        if (ctxp->state != AVDECODE_DEAD)
+                ctxp->state = AVDECODE_DIE;
+        while (ctxp->state != AVDECODE_DEAD) ;
+
+        gs_avdecode_destroy(&ctxp->video, tex);
 }
 
 int
