@@ -166,11 +166,16 @@ extern void gs_avdecode_request_upload_to_texture(gs_command_buffer_t* cb, gs_av
 //
 
 enum avdecode_pthread_states {
-        AVDECODE_START,     // Worker thread will change to running ASAP
+        AVDECODE_START,     // Worker thread will change to RUNNING asap
         AVDECODE_DONE,      // Worker thread will await state changes (and not touch anything else)
 
-        AVDECODE_RUNNING,   // Worker thread is decoding, on complete it changes to DONE
-        AVDECODE_STOP,      // Will froce decoding thread to switch to DONE ASAP
+        AVDECODE_SINGLE,    // worker thread will change to RUNNING asap,
+                            // and once a single frame is decoded, it will turn to DONE
+                            // Unlike a normal start, single will NOT wait for the frame to be read.
+                            //            (AVDECODE_FRAME_COMPLETE will still be set)
+
+        AVDECODE_RUNNING,   // Worker thread is decoding, when the last frame is read it changes to DONE
+        AVDECODE_STOP,      // Will froce decoding thread to switch to DONE asap
 
         AVDECODE_DIE = -1,  // Worker thread will exit on next state check
         AVDECODE_DEAD = -2, // Worker thread has exited
@@ -375,9 +380,15 @@ int
 gs_avdecode_init(const char* path, gs_avdecode_context_t* ctx, const gs_graphics_texture_desc_t* desc, gs_asset_texture_t* out)
 {
         if (!ctx) return 2;
-        *ctx =  (gs_avdecode_context_t){0};
         ctx->video_stream_idx = -1;
         ctx->audio_stream_idx = -1;
+        ctx->fmt_ctx = NULL;
+        ctx->video_stream = NULL;
+        ctx->audio_stream = NULL;
+        ctx->frame = NULL;
+        ctx->pkt = NULL;
+        ctx->video_dec_ctx = NULL;
+        ctx->audio_dec_ctx = NULL;
         ctx->src_filename = path;
 
         /* open input file, and allocate format context */
@@ -396,7 +407,8 @@ gs_avdecode_init(const char* path, gs_avdecode_context_t* ctx, const gs_graphics
         int ret = 0;
         if (_gs_avdecode_open_codec_context(ctx, &ctx->video_stream_idx, &ctx->video_dec_ctx, ctx->fmt_ctx, &ctx->alpha, AVMEDIA_TYPE_VIDEO) >= 0) {
                 ctx->video_stream = ctx->fmt_ctx->streams[ctx->video_stream_idx];
-                ctx->frametime = (float)ctx->video_stream->r_frame_rate.den / (float)ctx->video_stream->r_frame_rate.num;
+                if (!ctx->frametime)
+                        ctx->frametime = (float)ctx->video_stream->r_frame_rate.den / (float)ctx->video_stream->r_frame_rate.num;
 
                 ctx->width = ctx->video_dec_ctx->width;
                 ctx->height = ctx->video_dec_ctx->height;
@@ -472,43 +484,45 @@ end:
 int
 gs_avdecode_next_frame(gs_avdecode_context_t* ctx)
 {
-        int skip_packet;
         int ret;
-        do {
-                skip_packet = 0;
-                ret = 0;
-                int new = 0;
-                if (!ctx->frame_eof) {
-                        int frame_res = av_read_frame(ctx->fmt_ctx, ctx->pkt);
-                        if (frame_res == AVERROR_EOF) {
-                                ctx->frame_eof = 1;
-                        } else if (frame_res < 0) {
-                                return -1;
-                        } else {
-                                new = 1;
-                                ctx->dont_send_new_frame = 0;
-                        }
-                }
-                // check if the packet belongs to a stream we are interested in, otherwise skip it
-                if (ctx->pkt->stream_index == ctx->video_stream_idx) {
-                        ret = _gs_avdecode_decode_packet(ctx, ctx->video_dec_ctx, ctx->frame_eof ? NULL : ctx->pkt, !ctx->dont_send_new_frame);
-                } else if (ctx->pkt->stream_index == ctx->audio_stream_idx) {
-                        //ret = _gs_avdecode_decode_packet(ctx, ctx->audio_dec_ctx, ctx->frame_eof ? NULL : ctx->pkt, new);
-                        if (new) av_packet_unref(ctx->pkt);
-                        continue;
+read_packet_again:
+        ret = 0;
+        int new = 0;
+        if (!ctx->frame_eof) {
+                int frame_res = av_read_frame(ctx->fmt_ctx, ctx->pkt);
+                if (frame_res == AVERROR_EOF) {
+                        ctx->frame_eof = 1;
+                } else if (frame_res < 0) {
+                        return -1;
                 } else {
-                        if (new) av_packet_unref(ctx->pkt);
-                        continue;
+                        new = 1;
+                        ctx->dont_send_new_frame = 0;
                 }
-                if (new)
-                        av_packet_unref(ctx->pkt);
-                if (ret == 0) {
-                        if (ctx->frame_eof)
-                                return -1;
-                } else {
-                        ctx->dont_send_new_frame = 1;
-                }
-        } while (skip_packet);
+        }
+        // check if the packet belongs to a stream we are interested in, otherwise skip it
+        if (ctx->pkt->stream_index == ctx->video_stream_idx) {
+                ret = _gs_avdecode_decode_packet(ctx, ctx->video_dec_ctx, ctx->frame_eof ? NULL : ctx->pkt, !ctx->dont_send_new_frame);
+        } else if (ctx->pkt->stream_index == ctx->audio_stream_idx) {
+                //ret = _gs_avdecode_decode_packet(ctx, ctx->audio_dec_ctx, ctx->frame_eof ? NULL : ctx->pkt, new);
+                if (new) av_packet_unref(ctx->pkt);
+                goto read_packet_again;
+        } else {
+                if (new) av_packet_unref(ctx->pkt);
+                goto read_packet_again;
+        }
+
+        if (new)
+                av_packet_unref(ctx->pkt);
+
+        if (ret < 0)
+                return ret;
+
+        if (ret == 0) {
+                if (ctx->frame_eof)
+                        return -1;
+        } else {
+                ctx->dont_send_new_frame = 1;
+        }
 
         return ret;
 }
@@ -517,8 +531,8 @@ void
 gs_avdecode_flush(gs_avdecode_context_t* ctx)
 {
         int ret;
-        int once = 1;
         if (ctx->video_dec_ctx) {
+                int once = 1;
                 do {
                         ret = _gs_avdecode_decode_packet(ctx, ctx->video_dec_ctx, NULL, once);
                         once = 0;
@@ -526,7 +540,7 @@ gs_avdecode_flush(gs_avdecode_context_t* ctx)
                 avcodec_flush_buffers(ctx->video_dec_ctx);
         }
         if (ctx->audio_dec_ctx) {
-                once = 1;
+                int once = 1;
                 do {
                         ret = _gs_avdecode_decode_packet(ctx, ctx->audio_dec_ctx, NULL, 1);
                         once = 0;
@@ -561,10 +575,14 @@ gs_avdecode_seek(gs_avdecode_context_t* ctx, int64_t timestamp,
         if (!ctx) return -1;
         if (!ctx->fmt_ctx) return -1;
 
+        int ret = 0;
+        while (!ctx->dont_send_new_frame && ret >= 0)
+                ret = gs_avdecode_next_frame(ctx);
         ctx->frame_eof = 0;
         ctx->dont_send_new_frame = 0;
         ctx->pkt->pos = -1;
         gs_avdecode_flush(ctx);
+
         return av_seek_frame(ctx->fmt_ctx, ctx->video_stream_idx, timestamp, flags);
 }
 
@@ -599,16 +617,25 @@ _gs_avdecode_pthread_player(void* data)
 
 
 pthread_decoder_start:
+        int single = 0;
         // check for state changes
         for (; ; gs_platform_sleep(dt)) {
                 int check;
+                int exit;
 
                 check = AVDECODE_STOP;
                 atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DONE);
 
                 check = AVDECODE_START;
-                int exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_RUNNING);
+                exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_RUNNING);
                 if (exit) break;
+
+                check = AVDECODE_SINGLE;
+                exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_RUNNING);
+                if (exit) {
+                        single = 1;
+                        break;
+                }
 
                 check = AVDECODE_DIE;
                 exit = atomic_compare_exchange_strong(&ctxp->state, &check, AVDECODE_DEAD);
@@ -671,9 +698,11 @@ pthread_decoder_start:
                 frames++;
 
                 if (res < 0) break;
+                if (single) break;
         }
 
-        while (ctxp->new_frame != AVDECODE_DECODING) gs_platform_sleep(dt);
+        if (!single)
+                while (ctxp->new_frame != AVDECODE_DECODING) gs_platform_sleep(dt);
 
 
         if (ctxp->loop) {
