@@ -616,7 +616,7 @@ _gs_avdecode_pthread_player(void* data)
         const double dt = 0.01;
 
 
-pthread_decoder_start:
+pthread_decoder_start: ;
         int single = 0;
         // check for state changes
         for (; ; gs_platform_sleep(dt)) {
